@@ -1,29 +1,17 @@
-package main
+package config
 
 import (
 	"database/sql"
 	"fmt"
 	simplejson "github.com/bitly/go-simplejson"
-	"github.com/howeyc/fsnotify"
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/elgs/filesync/api"
 	"github.com/elgs/filesync/index"
+	"github.com/howeyc/fsnotify"
+	_ "github.com/mattn/go-sqlite3"
 	"io/ioutil"
-	"os"
-	"runtime"
 )
 
-func main() {
-	runtime.GOMAXPROCS(runtime.NumCPU())
-	fmt.Println("CPUs: ", runtime.NumCPU())
-
-	input := args()
-	if len(input) >= 1 {
-		start(input[0])
-	}
-}
-
-func start(configFile string) {
+func StartServer(configFile string) {
 	b, err := ioutil.ReadFile(configFile)
 	if err != nil {
 		fmt.Println(configFile, " not found")
@@ -49,16 +37,4 @@ func start(configFile string) {
 
 	api.RunWeb(ip, port, monitors)
 	//watcher.Close()
-}
-
-func args() []string {
-	ret := []string{}
-	if len(os.Args) <= 1 {
-		ret = append(ret, "gsyncd.json")
-	} else {
-		for i := 1; i < len(os.Args); i++ {
-			ret = append(ret, os.Args[i])
-		}
-	}
-	return ret
 }
