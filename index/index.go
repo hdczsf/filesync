@@ -85,6 +85,11 @@ func ProcessDirChange(thePath string, info os.FileInfo, monitored string) {
 		fmt.Println("Ignored: ", thePath)
 		return
 	}
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Println(err)
+		}
+	}()
 	if info == nil {
 		fmt.Println("Dir no longer exists: " + thePath)
 		return
