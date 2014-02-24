@@ -16,7 +16,7 @@ Configuration
 server.json
 ```json
 {
-	"mode": "server"
+    "mode": "server",
     "ip": "0.0.0.0",
     "port": 6776,
     "monitors": {
@@ -37,7 +37,7 @@ Configuration
 client.json
 ```json
 {
-	"mode": "client",
+    "mode": "client",
     "ip": "127.0.0.1",
     "port": 6776,
     "monitors": {
