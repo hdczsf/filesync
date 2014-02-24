@@ -14,6 +14,8 @@ import (
 	"time"
 )
 
+var monitorFilePart bool = false
+
 func StartClient(configFile string, done chan bool) {
 	b, err := ioutil.ReadFile(configFile)
 	if err != nil {
@@ -98,38 +100,47 @@ func startWork(ip string, port int, key string, monitored string, maxInterval ti
 						// this file is probably not changed
 						continue
 					}
-					// file change, analyse it block by block
-					fileParts := filePartsFromServer(ip, port, key, filePath)
-					func() {
-						out, _ := os.OpenFile(f, os.O_RDWR, os.FileMode(0666))
-						defer out.Close()
-						out.Truncate(fileSize)
-						if len(fileParts) == 0 {
-							return
-						}
-						h := crc32.NewIEEE()
-						for _, filePart := range fileParts {
-							filePartMap, _ := filePart.(map[string]interface{})
-							idx, _ := filePartMap["StartIndex"].(json.Number)
-							startIndex, _ := idx.Int64()
-							ost, _ := filePartMap["Offset"].(json.Number)
-							offset, _ := ost.Int64()
-							checksum := filePartMap["Checksum"].(string)
-
-							buf := make([]byte, offset)
-							n, _ := out.ReadAt(buf, startIndex)
-
-							h.Reset()
-							h.Write(buf[:n])
-							v := fmt.Sprint(h.Sum32())
-							if checksum == v {
-								// block unchanged
+					if monitorFilePart {
+						// file change, analyse it block by block
+						fileParts := filePartsFromServer(ip, port, key, filePath)
+						func() {
+							out, _ := os.OpenFile(f, os.O_RDWR, os.FileMode(0666))
+							defer out.Close()
+							out.Truncate(fileSize)
+							if len(fileParts) == 0 {
 								return
 							}
-							// block changed
-							downloadFromServer(ip, port, key, filePath, startIndex, offset, out)
-						}
-					}()
+							h := crc32.NewIEEE()
+							for _, filePart := range fileParts {
+								filePartMap, _ := filePart.(map[string]interface{})
+								idx, _ := filePartMap["StartIndex"].(json.Number)
+								startIndex, _ := idx.Int64()
+								ost, _ := filePartMap["Offset"].(json.Number)
+								offset, _ := ost.Int64()
+								checksum := filePartMap["Checksum"].(string)
+
+								buf := make([]byte, offset)
+								n, _ := out.ReadAt(buf, startIndex)
+
+								h.Reset()
+								h.Write(buf[:n])
+								v := fmt.Sprint(h.Sum32())
+								if checksum == v {
+									// block unchanged
+									return
+								}
+								// block changed
+								downloadFromServer(ip, port, key, filePath, startIndex, offset, out)
+							}
+						}()
+					} else {
+						func() {
+							out, _ := os.OpenFile(f, os.O_RDWR, os.FileMode(0666))
+							defer out.Close()
+							out.Truncate(fileSize)
+							downloadFromServer(ip, port, key, filePath, 0, fileSize, out)
+						}()
+					}
 				}
 			}
 		}

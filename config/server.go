@@ -31,10 +31,11 @@ func StartServer(configFile string) {
 		defer db.Close()
 		db.Exec("VACUUM;")
 		index.InitIndex(monitored, db)
-		index.WatchRecursively(watcher, monitored, monitored)
 		go index.ProcessEvent(watcher, monitored)
+		index.WatchRecursively(watcher, monitored, monitored)
 	}
 
+	fmt.Println("Serving now...")
 	api.RunWeb(ip, port, monitors)
 	//watcher.Close()
 }

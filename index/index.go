@@ -35,7 +35,13 @@ const (
 	BLOCK_SIZE int64 = 1 << 20
 )
 
+var monitorFilePart bool = false
+
 func ProcessFileDelete(thePath string, monitored string) {
+	if ignore(thePath, monitored) {
+		fmt.Println("Ignored: ", thePath)
+		return
+	}
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Println(err)
@@ -45,12 +51,6 @@ func ProcessFileDelete(thePath string, monitored string) {
 
 	db, _ := sql.Open("sqlite3", SlashSuffix(monitored)+".sync/index.db")
 	defer db.Close()
-
-	psDeleteFileParts, _ := db.Prepare("DELETE FROM FILE_PARTS WHERE FILE_PATH=?")
-	defer psDeleteFileParts.Close()
-
-	psDeleteFilePartsSub, _ := db.Prepare("DELETE FROM FILE_PARTS WHERE FILE_PATH LIKE ?")
-	defer psDeleteFilePartsSub.Close()
 
 	psUpdateFiles, _ := db.Prepare(`UPDATE FILES SET STATUS=?,LAST_INDEXED=? WHERE FILE_PATH=?`)
 	defer psUpdateFiles.Close()
@@ -62,8 +62,14 @@ func ProcessFileDelete(thePath string, monitored string) {
 	SET FILE_MODE=?,LAST_MODIFIED=?,LAST_INDEXED=? WHERE FILE_PATH=?`)
 	defer psUpdateFileStatus.Close()
 
-	psDeleteFileParts.Exec(thePath[len(monitored):])
-	psDeleteFilePartsSub.Exec(thePath[len(monitored):] + "/%")
+	if monitorFilePart {
+		psDeleteFileParts, _ := db.Prepare("DELETE FROM FILE_PARTS WHERE FILE_PATH=?")
+		defer psDeleteFileParts.Close()
+		psDeleteFilePartsSub, _ := db.Prepare("DELETE FROM FILE_PARTS WHERE FILE_PATH LIKE ?")
+		defer psDeleteFilePartsSub.Close()
+		psDeleteFileParts.Exec(thePath[len(monitored):])
+		psDeleteFilePartsSub.Exec(thePath[len(monitored):] + "/%")
+	}
 
 	psUpdateFiles.Exec("deleted", time.Now().Unix(), thePath[len(monitored):])
 	pathDir := SlashSuffix(thePath[len(monitored):])
@@ -75,6 +81,10 @@ func ProcessFileDelete(thePath string, monitored string) {
 }
 
 func ProcessDirChange(thePath string, info os.FileInfo, monitored string) {
+	if ignore(thePath, monitored) {
+		fmt.Println("Ignored: ", thePath)
+		return
+	}
 	if info == nil {
 		fmt.Println("Dir no longer exists: " + thePath)
 		return
@@ -92,6 +102,10 @@ func ProcessDirChange(thePath string, info os.FileInfo, monitored string) {
 }
 
 func ProcessFileChange(thePath string, info os.FileInfo, monitored string) {
+	if ignore(thePath, monitored) {
+		fmt.Println("Ignored: ", thePath)
+		return
+	}
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Println(err)
@@ -109,9 +123,6 @@ func ProcessFileChange(thePath string, info os.FileInfo, monitored string) {
 	psSelectFile, _ := db.Prepare("SELECT * FROM FILES WHERE FILE_PATH=?")
 	defer psSelectFile.Close()
 
-	psSelectFileParts, _ := db.Prepare("SELECT * FROM FILE_PARTS WHERE FILE_PATH=? ORDER BY SEQ")
-	defer psSelectFileParts.Close()
-
 	psInsertFiles, _ := db.Prepare(`INSERT INTO FILES
 	(FILE_PATH,LAST_MODIFIED,FILE_SIZE,FILE_MODE,STATUS,LAST_INDEXED)
 	VALUES(?,?,?,?,?,?)`)
@@ -125,19 +136,6 @@ func ProcessFileChange(thePath string, info os.FileInfo, monitored string) {
 	psUpdateFileStatus, _ := db.Prepare(`UPDATE FILES
 	SET FILE_MODE=?,STATUS=?,LAST_MODIFIED=?,LAST_INDEXED=? WHERE FILE_PATH=?`)
 	defer psUpdateFileStatus.Close()
-
-	psInsertFileParts, _ := db.Prepare(`INSERT INTO FILE_PARTS
-	(FILE_PATH,SEQ,START_INDEX,OFFSET,CHECKSUM,CHECKSUM_TYPE)
-	VALUES(?,?,?,?,?,?)`)
-	defer psInsertFileParts.Close()
-
-	psUpdateFileParts, _ := db.Prepare(`UPDATE FILE_PARTS
-	SET START_INDEX=?,OFFSET=?,CHECKSUM=?,CHECKSUM_TYPE=?
-	WHERE FILE_PATH=? AND SEQ=?`)
-	defer psUpdateFileParts.Close()
-
-	psDeleteFileParts, _ := db.Prepare(`DELETE FROM FILE_PARTS WHERE FILE_PATH=? AND SEQ=?`)
-	defer psDeleteFileParts.Close()
 
 	insert := false
 	file := new(IndexedFile)
@@ -159,60 +157,73 @@ func ProcessFileChange(thePath string, info os.FileInfo, monitored string) {
 		psUpdateFiles.Exec(info.ModTime().Unix(), info.Size(), info.Mode().Perm(), "updating", time.Now().Unix(), thePath[len(monitored):])
 	}
 
-	blocks := int(math.Ceil(float64(info.Size()) / float64(BLOCK_SIZE)))
-	if blocks == 0 {
-		blocks = 1
-	}
+	if monitorFilePart {
+		psSelectFileParts, _ := db.Prepare("SELECT * FROM FILE_PARTS WHERE FILE_PATH=? ORDER BY SEQ")
+		defer psSelectFileParts.Close()
+		psInsertFileParts, _ := db.Prepare(`INSERT INTO FILE_PARTS (FILE_PATH,SEQ,START_INDEX,OFFSET,CHECKSUM,CHECKSUM_TYPE) VALUES(?,?,?,?,?,?)`)
+		defer psInsertFileParts.Close()
 
-	sliceFileParts := make([]IndexedFilePart, 0, 10)
-	rows, _ := psSelectFileParts.Query(thePath[len(monitored):])
-	defer rows.Close()
-	for rows.Next() {
-		filePart := new(IndexedFilePart)
-		rows.Scan(&filePart.FilePath, &filePart.Seq, &filePart.StartIndex, &filePart.Offset, &filePart.Checksum, &filePart.ChecksumType)
-		sliceFileParts = append(sliceFileParts, *filePart)
-	}
+		psUpdateFileParts, _ := db.Prepare(`UPDATE FILE_PARTS SET START_INDEX=?,OFFSET=?,CHECKSUM=?,CHECKSUM_TYPE=? WHERE FILE_PATH=? AND SEQ=?`)
+		defer psUpdateFileParts.Close()
 
-	h := crc32.NewIEEE()
-	f, _ := os.Open(thePath)
-	defer f.Close()
-	for i := 0; i < blocks; i++ {
-		var fp IndexedFilePart
-		insertFP := false
-		if i < len(sliceFileParts) {
-			fp = sliceFileParts[i]
-		} else {
-			//fp = *new(IndexedFilePart)
-			insertFP = true
+		psDeleteFileParts, _ := db.Prepare(`DELETE FROM FILE_PARTS WHERE FILE_PATH=? AND SEQ=?`)
+		defer psDeleteFileParts.Close()
+
+		blocks := int(math.Ceil(float64(info.Size()) / float64(BLOCK_SIZE)))
+		if blocks == 0 {
+			blocks = 1
 		}
 
-		buf := make([]byte, BLOCK_SIZE)
-		n, _ := f.ReadAt(buf, int64(i)*BLOCK_SIZE)
+		sliceFileParts := make([]IndexedFilePart, 0, 10)
+		rows, _ := psSelectFileParts.Query(thePath[len(monitored):])
+		defer rows.Close()
+		for rows.Next() {
+			filePart := new(IndexedFilePart)
+			rows.Scan(&filePart.FilePath, &filePart.Seq, &filePart.StartIndex, &filePart.Offset, &filePart.Checksum, &filePart.ChecksumType)
+			sliceFileParts = append(sliceFileParts, *filePart)
+		}
 
-		h.Reset()
-		h.Write(buf[:n])
-		v := fmt.Sprint(h.Sum32())
-
-		if v != fp.Checksum {
-			// part changed
-			fp.Checksum = v
-			fp.ChecksumType = "CRC32"
-			fp.StartIndex = int64(i) * BLOCK_SIZE
-			fp.Offset = n
-			fp.FilePath = thePath[len(monitored):]
-			fp.Seq = i
-
-			if insertFP {
-				psInsertFileParts.Exec(fp.FilePath, fp.Seq, fp.StartIndex, fp.Offset, fp.Checksum, fp.ChecksumType)
+		h := crc32.NewIEEE()
+		f, _ := os.Open(thePath)
+		defer f.Close()
+		for i := 0; i < blocks; i++ {
+			var fp IndexedFilePart
+			insertFP := false
+			if i < len(sliceFileParts) {
+				fp = sliceFileParts[i]
 			} else {
-				psUpdateFileParts.Exec(fp.StartIndex, fp.Offset, fp.Checksum, fp.ChecksumType, fp.FilePath, fp.Seq)
+				//fp = *new(IndexedFilePart)
+				insertFP = true
 			}
+
+			buf := make([]byte, BLOCK_SIZE)
+			n, _ := f.ReadAt(buf, int64(i)*BLOCK_SIZE)
+
+			h.Reset()
+			h.Write(buf[:n])
+			v := fmt.Sprint(h.Sum32())
+
+			if v != fp.Checksum {
+				// part changed
+				fp.Checksum = v
+				fp.ChecksumType = "CRC32"
+				fp.StartIndex = int64(i) * BLOCK_SIZE
+				fp.Offset = n
+				fp.FilePath = thePath[len(monitored):]
+				fp.Seq = i
+
+				if insertFP {
+					psInsertFileParts.Exec(fp.FilePath, fp.Seq, fp.StartIndex, fp.Offset, fp.Checksum, fp.ChecksumType)
+				} else {
+					psUpdateFileParts.Exec(fp.StartIndex, fp.Offset, fp.Checksum, fp.ChecksumType, fp.FilePath, fp.Seq)
+				}
+			}
+			fp.Checksum = v
 		}
-		fp.Checksum = v
-	}
-	if len(sliceFileParts) > blocks {
-		for i := blocks; i < len(sliceFileParts); i-- {
-			psDeleteFileParts.Exec(thePath[len(monitored):], i)
+		if len(sliceFileParts) > blocks {
+			for i := blocks; i < len(sliceFileParts); i-- {
+				psDeleteFileParts.Exec(thePath[len(monitored):], i)
+			}
 		}
 	}
 	psUpdateFileStatus.Exec(info.Mode().Perm(), "ready", info.ModTime().Unix(), time.Now().Unix(), thePath[len(monitored):])
@@ -221,48 +232,58 @@ func ProcessFileChange(thePath string, info os.FileInfo, monitored string) {
 }
 
 func WatchRecursively(watcher *fsnotify.Watcher, root string, monitored string) error {
+	if ignore(root, monitored) {
+		fmt.Println("Ignored: ", root)
+		return nil
+	}
+
 	safeRoot := PathSafe(root)
 
-	db, _ := sql.Open("sqlite3", SlashSuffix(monitored)+".sync/index.db")
-	defer db.Close()
-
 	mapFiles := make(map[string]IndexedFile)
-	psSelectFilesLike, _ := db.Prepare("SELECT * FROM FILES WHERE FILE_PATH LIKE ?")
-	defer psSelectFilesLike.Close()
-	rows, _ := psSelectFilesLike.Query(SlashSuffix(LikeSafe(safeRoot)[len(monitored):]) + "%")
-	defer rows.Close()
-	for rows.Next() {
-		file := new(IndexedFile)
-		rows.Scan(&file.FilePath, &file.LastModified, &file.FileSize, &file.FileMode, &file.Status, &file.LastIndexed)
-		mapFiles[file.FilePath] = *file
-	}
-	psInsertFiles, _ := db.Prepare(`INSERT INTO FILES
-	(FILE_PATH,LAST_MODIFIED,FILE_SIZE,FILE_MODE,STATUS,LAST_INDEXED)
-	VALUES(?,?,?,?,?,?)`)
-	defer psInsertFiles.Close()
-
-	psUpdateFiles, _ := db.Prepare(`UPDATE FILES
-	SET FILE_MODE=?,STATUS='ready',LAST_MODIFIED=?,LAST_INDEXED=? WHERE FILE_PATH=?`)
-	defer psUpdateFiles.Close()
+	func() {
+		db, _ := sql.Open("sqlite3", SlashSuffix(monitored)+".sync/index.db")
+		defer db.Close()
+		psSelectFilesLike, _ := db.Prepare("SELECT * FROM FILES WHERE FILE_PATH LIKE ?")
+		defer psSelectFilesLike.Close()
+		rows, _ := psSelectFilesLike.Query(SlashSuffix(LikeSafe(safeRoot)[len(monitored):]) + "%")
+		defer rows.Close()
+		for rows.Next() {
+			file := new(IndexedFile)
+			rows.Scan(&file.FilePath, &file.LastModified, &file.FileSize, &file.FileMode, &file.Status, &file.LastIndexed)
+			mapFiles[file.FilePath] = *file
+		}
+	}()
 
 	filepath.Walk(safeRoot,
 		(filepath.WalkFunc)(func(path string, info os.FileInfo, err error) error {
+			db, _ := sql.Open("sqlite3", SlashSuffix(monitored)+".sync/index.db")
+			defer db.Close()
+			//fmt.Println(path)
+			if ignore(path, monitored) {
+				fmt.Println("Ignored: ", path)
+				return nil
+			}
 			var thePath string
 			if info.IsDir() {
 				thePath = SlashSuffix(PathSafe(path))
 				if strings.HasPrefix(thePath, SlashSuffix(safeRoot)+".sync/") {
 					return nil
 				}
-
 				watcher.Watch(thePath[0 : len(thePath)-1])
 				// update index
-				if v, ok := mapFiles[thePath[len(monitored):]]; !ok {
-					psInsertFiles.Exec(thePath[len(monitored):], info.ModTime().Unix(), -1, uint32(info.Mode().Perm()), "ready", time.Now().Unix())
-				} else {
-					if v.Status != "ready" {
-						psUpdateFiles.Exec(info.Mode().Perm(), info.ModTime().Unix(), time.Now().Unix(), v.FilePath)
+				func() {
+					if v, ok := mapFiles[thePath[len(monitored):]]; !ok {
+						psInsertFiles, _ := db.Prepare(`INSERT INTO FILES (FILE_PATH,LAST_MODIFIED,FILE_SIZE,FILE_MODE,STATUS,LAST_INDEXED) VALUES(?,?,?,?,?,?)`)
+						defer psInsertFiles.Close()
+						psInsertFiles.Exec(thePath[len(monitored):], info.ModTime().Unix(), -1, uint32(info.Mode().Perm()), "ready", time.Now().Unix())
+					} else {
+						if v.Status != "ready" {
+							psUpdateFiles, _ := db.Prepare(`UPDATE FILES SET FILE_MODE=?,STATUS='ready',LAST_MODIFIED=?,LAST_INDEXED=? WHERE FILE_PATH=?`)
+							defer psUpdateFiles.Close()
+							psUpdateFiles.Exec(info.Mode().Perm(), info.ModTime().Unix(), time.Now().Unix(), v.FilePath)
+						}
 					}
-				}
+				}()
 			} else {
 				thePath = PathSafe(path)
 				if strings.HasPrefix(PathSafe(filepath.Dir(thePath)), SlashSuffix(safeRoot)+".sync") {
@@ -306,7 +327,8 @@ func InitIndex(monitored string, db *sql.DB) error {
 	exists := exists(SlashSuffix(monitored) + ".sync/index.db")
 	if !exists {
 		os.MkdirAll(SlashSuffix(monitored)+".sync/", (os.FileMode)(0755))
-		db.Exec(`
+		if monitorFilePart {
+			db.Exec(`
 			CREATE TABLE FILE_PARTS(
 				FILE_PATH TEXT NOT NULL,
 				SEQ INTEGER NOT NULL,
@@ -315,8 +337,8 @@ func InitIndex(monitored string, db *sql.DB) error {
 				CHECKSUM TEXT NOT NULL,
 				CHECKSUM_TYPE TEXT NOT NULL,
 				PRIMARY KEY(FILE_PATH, SEQ)
-			);
-		`)
+			);`)
+		}
 		db.Exec(`
 			CREATE TABLE FILES(
 				FILE_PATH TEXT PRIMARY KEY,
@@ -346,17 +368,23 @@ func exists(path string) bool {
 	return false
 }
 
+func ignore(path string, monitored string) bool {
+	f := strings.HasPrefix(PathSafe(filepath.Dir(path)), SlashSuffix(monitored)+".sync")
+	d := PathSafe(filepath.Dir(path)) == SlashSuffix(monitored)+".sync"
+	return f || d
+}
+
 func ProcessEvent(watcher *fsnotify.Watcher, monitored string) {
 	for {
 		select {
 		case ev := <-watcher.Event:
-			//fmt.Println("event:", ev, ":", monitored)
+			//fmt.Println("event:", ev.Name, ":", monitored)
 			info, _ := os.Lstat(ev.Name)
 			if info == nil {
 				ProcessFileDelete(ev.Name, monitored)
 			} else if ev.IsCreate() {
 				if info.IsDir() {
-					WatchRecursively(watcher, ev.Name, monitored)
+					go WatchRecursively(watcher, ev.Name, monitored)
 					//fmt.Println("Created dir: " + ev.Name)
 				} else {
 					ProcessFileChange(ev.Name, info, monitored)
@@ -390,7 +418,7 @@ func ProcessEvent(watcher *fsnotify.Watcher, monitored string) {
 			fmt.Println("error:", err)
 		case <-time.After(time.Minute):
 			//fmt.Println("I'm idle, so I decided to do a patrol")
-			WatchRecursively(watcher, monitored, monitored)
+			go WatchRecursively(watcher, monitored, monitored)
 		}
 	}
 }
