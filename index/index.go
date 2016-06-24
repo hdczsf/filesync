@@ -3,7 +3,6 @@ package index
 import (
 	"database/sql"
 	"fmt"
-	"github.com/howeyc/fsnotify"
 	"hash/crc32"
 	"math"
 	"os"
@@ -11,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/howeyc/fsnotify"
 )
 
 type IndexedFile struct {
@@ -67,12 +68,12 @@ func ProcessFileDelete(thePath string, monitored string) {
 		defer psDeleteFileParts.Close()
 		psDeleteFilePartsSub, _ := db.Prepare("DELETE FROM FILE_PARTS WHERE FILE_PATH LIKE ?")
 		defer psDeleteFilePartsSub.Close()
-		psDeleteFileParts.Exec(thePath[len(monitored):])
-		psDeleteFilePartsSub.Exec(thePath[len(monitored):] + "/%")
+		psDeleteFileParts.Exec("/" + thePath[len(monitored):])
+		psDeleteFilePartsSub.Exec("/" + thePath[len(monitored):] + "/%")
 	}
 
-	psUpdateFiles.Exec("deleted", time.Now().Unix(), thePath[len(monitored):])
-	pathDir := SlashSuffix(thePath[len(monitored):])
+	psUpdateFiles.Exec("deleted", time.Now().Unix(), "/"+thePath[len(monitored):])
+	pathDir := SlashSuffix("/" + thePath[len(monitored):])
 	psUpdateFiles.Exec("deleted", time.Now().Unix(), pathDir)
 	psDeleteFilesSub.Exec(pathDir+"%", pathDir)
 
@@ -103,7 +104,7 @@ func ProcessDirChange(thePath string, info os.FileInfo, monitored string) {
 	SET LAST_MODIFIED=?,FILE_MODE=?,LAST_INDEXED=? WHERE FILE_PATH=?`)
 	defer psUpdateFileStatus.Close()
 
-	psUpdateFileStatus.Exec(info.ModTime().Unix(), info.Mode().Perm(), time.Now().Unix(), SlashSuffix(thePath[len(monitored):]))
+	psUpdateFileStatus.Exec(info.ModTime().Unix(), info.Mode().Perm(), time.Now().Unix(), SlashSuffix("/"+thePath[len(monitored):]))
 }
 
 func ProcessFileChange(thePath string, info os.FileInfo, monitored string) {
@@ -144,7 +145,7 @@ func ProcessFileChange(thePath string, info os.FileInfo, monitored string) {
 
 	insert := false
 	file := new(IndexedFile)
-	err := psSelectFile.QueryRow(thePath[len(monitored):]).Scan(&file.FilePath, &file.LastModified,
+	err := psSelectFile.QueryRow("/"+thePath[len(monitored):]).Scan(&file.FilePath, &file.LastModified,
 		&file.FileSize, &file.FileMode, &file.Status, &file.LastIndexed)
 	if err == sql.ErrNoRows {
 		insert = true
@@ -157,9 +158,9 @@ func ProcessFileChange(thePath string, info os.FileInfo, monitored string) {
 
 	// now we think file has been changed
 	if insert {
-		psInsertFiles.Exec(thePath[len(monitored):], info.ModTime().Unix(), info.Size(), info.Mode().Perm(), "updating", time.Now().Unix())
+		psInsertFiles.Exec("/"+thePath[len(monitored):], info.ModTime().Unix(), info.Size(), info.Mode().Perm(), "updating", time.Now().Unix())
 	} else {
-		psUpdateFiles.Exec(info.ModTime().Unix(), info.Size(), info.Mode().Perm(), "updating", time.Now().Unix(), thePath[len(monitored):])
+		psUpdateFiles.Exec(info.ModTime().Unix(), info.Size(), info.Mode().Perm(), "updating", time.Now().Unix(), "/"+thePath[len(monitored):])
 	}
 
 	if monitorFilePart {
@@ -231,7 +232,7 @@ func ProcessFileChange(thePath string, info os.FileInfo, monitored string) {
 			}
 		}
 	}
-	psUpdateFileStatus.Exec(info.Mode().Perm(), "ready", info.ModTime().Unix(), time.Now().Unix(), thePath[len(monitored):])
+	psUpdateFileStatus.Exec(info.Mode().Perm(), "ready", info.ModTime().Unix(), time.Now().Unix(), "/"+thePath[len(monitored):])
 	parentDirInfo, _ := os.Lstat(filepath.Dir(thePath))
 	psUpdateFileStatus.Exec(parentDirInfo.Mode().Perm(), "ready", parentDirInfo.ModTime().Unix(), time.Now().Unix(), SlashSuffix(PathSafe(filepath.Dir(thePath))[len(monitored):]))
 }
@@ -280,12 +281,12 @@ func WatchRecursively(watcher *fsnotify.Watcher, root string, monitored string) 
 					if v, ok := mapFiles[thePath[len(monitored):]]; !ok {
 						psInsertFiles, _ := db.Prepare(`INSERT INTO FILES (FILE_PATH,LAST_MODIFIED,FILE_SIZE,FILE_MODE,STATUS,LAST_INDEXED) VALUES(?,?,?,?,?,?)`)
 						defer psInsertFiles.Close()
-						psInsertFiles.Exec(thePath[len(monitored):], info.ModTime().Unix(), -1, uint32(info.Mode().Perm()), "ready", time.Now().Unix())
+						psInsertFiles.Exec("/"+thePath[len(monitored):], info.ModTime().Unix(), -1, uint32(info.Mode().Perm()), "ready", time.Now().Unix())
 					} else {
 						if v.Status != "ready" {
 							psUpdateFiles, _ := db.Prepare(`UPDATE FILES SET FILE_MODE=?,STATUS='ready',LAST_MODIFIED=?,LAST_INDEXED=? WHERE FILE_PATH=?`)
 							defer psUpdateFiles.Close()
-							psUpdateFiles.Exec(info.Mode().Perm(), info.ModTime().Unix(), time.Now().Unix(), v.FilePath)
+							psUpdateFiles.Exec(info.Mode().Perm(), info.ModTime().Unix(), time.Now().Unix(), "/"+v.FilePath)
 						}
 					}
 				}()
